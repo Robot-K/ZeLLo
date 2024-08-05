@@ -68,8 +68,21 @@ def get_task_bert_embs(libero_root_dir):
     libero_h5_files = glob(os.path.join(libero_root_dir, "*/*.hdf5"))
     task_names = set([get_task_name_from_file_name(os.path.basename(file).split('.')[0]) for file in libero_h5_files])
     task_names = list(task_names)
+    
+    # #check task_names
+    # print(task_names)
+
+    #check
+    if not task_names:
+        print(libero_root_dir)
+        raise ValueError("No task names found.")
+
 
     if not os.path.exists("libero/task_embedding_caches/task_emb_bert.npy"):
+
+        #check
+        print("no path")
+
         # set the task embeddings
         cfg = EasyDict({
             "task_embedding_format": "bert",
@@ -85,7 +98,11 @@ def get_task_bert_embs(libero_root_dir):
         os.makedirs("libero/task_embedding_caches/", exist_ok=True)
         np.save("libero/task_embedding_caches/task_emb_bert.npy", task_name_to_emb)
     else:
-        task_name_to_emb = np.load("libero/task_embedding_caches/task_emb_bert.npy", allow_pickle=True).item()
+         task_name_to_emb = np.load("libero/task_embedding_caches/task_emb_bert.npy", allow_pickle=True).item()
+
+    #check_dict
+    print(task_name_to_emb.keys())
+
     return task_name_to_emb
 
 
@@ -168,8 +185,8 @@ def collect_states_from_demo(h5_file, image_save_dir, demos_group, demo_k, view_
             visualizer.visualize(torch.from_numpy(rgb)[None], pred_tracks, pred_vis, filename=f"{demo_k}_{view}")
 
         # [1, T, N, 2], normalize coordinates to [0, 1] for in-picture coordinates
-        pred_tracks[:, :, :, 0] /= W
-        pred_tracks[:, :, :, 1] /= H
+        pred_tracks[:, :, :, 0] /= H
+        pred_tracks[:, :, :, 1] /= W
 
         # hierarchically save arrays under the view name
         view_grp = root_grp.create_group(view) if view not in root_grp else root_grp[view]
@@ -194,11 +211,15 @@ def save_images(video, image_dir, view_name):
         Image.fromarray(img).save(os.path.join(image_dir, f"{view_name}_{idx}.png"))
 
 
-def inital_save_h5(path, skip_exist):
+def initial_save_h5(path, skip_exist):
     if os.path.exists(path):
-        with h5py.File(path, 'r') as f:
-            if ("agentview" in f["root"]) and ("eye_in_hand" in f["root"]) and skip_exist:
-                return None
+        print(path, 'already exit!')
+        try:
+            with h5py.File(path, 'r') as f:
+                if ("agentview" in f["root"]) and ("eye_in_hand" in f["root"]) and skip_exist:
+                    return None
+        except Exception as e:
+            print(f'{e} while opening {path}, covering it now.')
 
     f = h5py.File(path, 'w')
     return f
@@ -215,8 +236,12 @@ def get_attrs_and_view_names(demo_h5):
 
 
 def generate_data(source_h5_path, target_dir, track_model, task_emb, skip_exist):
+    
+    # change
     demos = h5py.File(source_h5_path, 'r')['data']
+    # demos = h5py.File(source_h5_path, 'r')['observations']
     demo_keys = natsorted(list(demos.keys()))
+
     attrs, views = get_attrs_and_view_names(demos)
 
     # save environment meta data
@@ -234,7 +259,7 @@ def generate_data(source_h5_path, target_dir, track_model, task_emb, skip_exist)
         for idx in tqdm(range(len(demo_keys))):
             demo_k = demo_keys[idx]
             save_path = os.path.join(target_dir, f"{demo_k}.hdf5")
-            h5_file_handle = inital_save_h5(save_path, skip_exist)
+            h5_file_handle = initial_save_h5(save_path, skip_exist)
             image_save_dir = os.path.join(target_dir, "images", demo_k)
 
             if h5_file_handle is None:
@@ -254,7 +279,7 @@ def generate_data(source_h5_path, target_dir, track_model, task_emb, skip_exist)
 @click.option("--root", type=str, default="./data/libero/")
 @click.option("--save", type=str, default="./data/atm_libero/")
 @click.option("--suite", type=str, default="libero_spatial")
-@click.option("--skip_exist", type=bool, default=False)
+@click.option("--skip_exist", type=bool, default=True)
 def main(root, save, suite, skip_exist):
     """
     root: str, root directory of original libero dataset
@@ -265,14 +290,32 @@ def main(root, save, suite, skip_exist):
     suite_dir = os.path.join(root, suite)
 
     # setup cotracker
-    cotracker = torch.hub.load(os.path.join(os.path.expanduser("~"), ".cache/torch/hub/facebookresearch_co-tracker_main/"), "cotracker2", source="local")
+    repo_path = os.path.join(os.path.expanduser("~"), ".cache/torch/hub/facebookresearch_co-tracker_main/")
+    model_name = "cotracker2"
+    
+    try:
+        # Attempt to load the model
+        cotracker = torch.hub.load(repo_path, model_name, source="local")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+        # Handle the error by notifying the user and re-downloading the repo
+        print("Repository not found. Attempting to re-download the repository...")
+        repo_url = "https://github.com/facebookresearch/co-tracker"
+        os.system(f'rm -rf {repo_path}')
+        os.system(f'git clone {repo_url} {repo_path}')
+        cotracker = torch.hub.load(repo_path, model_name, source="local")
+    
+    # Set the model to evaluation mode and move it to GPU
     cotracker = cotracker.eval().cuda()
 
     # load task name embeddings
+    # task_bert_embs_dict = get_task_bert_embs(root)
     task_bert_embs_dict = get_task_bert_embs(root)
 
     for source_h5 in os.listdir(suite_dir):
         source_h5_path = os.path.join(suite_dir, source_h5)
+        if 'hdf5' not in source_h5: # to pass files like DS_store
+            continue
         file_name = source_h5.split('.')[0]
         task_name = get_task_name_from_file_name(file_name)
  
